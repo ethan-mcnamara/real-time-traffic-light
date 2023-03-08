@@ -64,7 +64,6 @@ static void Potentiometer_Task( void * pvParameters );
 static void CarLights_Task( void *pvParameters );
 
 // Global variables
-xQueueHandle xQueue_handle = 0;
 float pot_value = 0;
 uint8_t car_array [19] = { 0 };
 uint8_t cars_moving = 0;
@@ -168,14 +167,6 @@ int main(void)
 	 // Initialize ADC
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_84Cycles);
 
-	/* Create the queue used by the queue send and queue receive tasks.
-	http://www.freertos.org/a00116.html */
-	xQueue_handle = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
-							sizeof( uint16_t ) );	/* The size of each item the queue holds. */
-
-	/* Add to the registry, for the benefit of kernel aware debugging. */
-	vQueueAddToRegistry( xQueue_handle, "MainQueue" );
-
 	// Create the three tasks used in the program
 	xTaskCreate( Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate( Potentiometer_Task, "Potentiometer", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
@@ -222,16 +213,9 @@ static void Manager_Task( void *pvParameters )
 			delay_ticks *= RED_LIGHT_DEFAULT_DELAY * (1.25 - pot_value);
 			cars_moving = 0;
 		}
-		if( xQueueSend(xQueue_handle,&tx_data,1000))
-		{
-			if(++tx_data == 3)
-				tx_data = 0;
-			vTaskDelay(delay_ticks);
-		}
-		else
-		{
-			printf("Manager Failed!\n");
-		}
+		if(++tx_data == 3)
+			tx_data = 0;
+		vTaskDelay(delay_ticks);
 	}
 }
 
