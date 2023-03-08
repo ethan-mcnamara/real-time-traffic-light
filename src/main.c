@@ -290,7 +290,7 @@ static void CarLights_Task( void *pvParameters )
 		}
 
 		// Proportional to the potentiometer value, randomly determine whether a new should be added
-		if (rand() % 100 < pot_value * 100)
+		if (rand() % 100 < max(pot_value * 100, 15))
 		{
 			copy_car_array[0] = 1;
 		}
@@ -308,8 +308,11 @@ static void CarLights_Task( void *pvParameters )
 			car_array[i] = copy_car_array[i];
 		}
 
+		delay_ticks = delay_ticks * pot_value * CAR_SPEED_DEFAULT;
+		delay_ticks = max(333, delay_ticks);
+
 		// Delay for a value proportional to the potentiometer value
-		vTaskDelay(delay_ticks * pot_value * CAR_SPEED_DEFAULT);
+		vTaskDelay(delay_ticks);
 	}
 
 }
