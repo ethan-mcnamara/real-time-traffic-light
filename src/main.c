@@ -63,10 +63,9 @@ static void Manager_Task( void *pvParameters );
 static void Potentiometer_Task( void * pvParameters );
 static void CarLights_Task( void *pvParameters );
 
-// Global variables
-float pot_value = 0;
-uint8_t car_array [19] = { 0 };
-uint8_t cars_moving = 0;
+// Queue declarations
+xQueueHandle xQueue_potentiometer_handle = 0;
+xQueueHandle xQueue_lightStatus_handle = 0;
 
 // Initialize the pin as a GPIO output pin
 void initializePin_Out(int GPIO_pin)
@@ -164,8 +163,16 @@ int main(void)
 
 	prvSetupHardware();
 
-	 // Initialize ADC
+	// Initialize ADC
 	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_84Cycles);
+
+	// Create the queues
+	xQueue_potentiometer_handle = xQueueCreate(mainQUEUE_LENGTH, sizeof(float));
+	xQueue_lightStatus_handle = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint8_t));
+
+	// Add the queues to the registry
+	vQueueAddToRegistry(xQueue_potentiometer_handle, "PotentiometerQueue");
+	vQueueAddToRegistry(xQueue_lightStatus_handle, "LightStatusQueue");
 
 	// Create the three tasks used in the program
 	xTaskCreate( Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
@@ -188,6 +195,7 @@ static void Manager_Task( void *pvParameters )
 {
 	uint16_t tx_data = amber;
 	TickType_t delay_ticks;
+	uint8_t cars_moving = 0;
 	while(1)
 	{
 		delay_ticks = 1000 / portTICK_PERIOD_MS;
@@ -213,9 +221,17 @@ static void Manager_Task( void *pvParameters )
 			delay_ticks *= RED_LIGHT_DEFAULT_DELAY * (1.25 - pot_value);
 			cars_moving = 0;
 		}
-		if(++tx_data == 3)
-			tx_data = 0;
-		vTaskDelay(delay_ticks);
+		if(!xQueueSend(xQueue_lightStatus_handle, &cars_moving, 1000))
+		{
+			if(++tx_data == 3)
+				tx_data = 0;
+			vTaskDelay(delay_ticks);
+		}
+		else
+		{
+			printf("Manager Task failed!\n");
+			fflush(stdout);
+		}
 	}
 }
 
@@ -224,15 +240,20 @@ static void Manager_Task( void *pvParameters )
 // This is repeated for the lifetime of the program.
 static void Potentiometer_Task( void *pvParameters )
 {
-	float unmodified_pot_value;
+	float pot_value;
 	while (1)
 	{
-		unmodified_pot_value = ADC_Start_Conversion();
-		unmodified_pot_value -= POT_MIN_VALUE;
-		unmodified_pot_value /= POT_VALUE_RANGE;
-		unmodified_pot_value = max(unmodified_pot_value, 0);
-		unmodified_pot_value = min(unmodified_pot_value, 1);
-		pot_value = unmodified_pot_value;
+		pot_value = ADC_Start_Conversion();
+		pot_value -= POT_MIN_VALUE;
+		pot_value /= POT_VALUE_RANGE;
+		pot_value = max(pot_value, 0);
+		pot_value = min(pot_value, 1);
+
+		if(!xQueueSend(xQueue_potentiometer_handle, &pot_value, 1000))
+		{
+			printf("Potentiometer Task failed!\n");
+			fflush(stdout);
+		}
 	}
 }
 
@@ -242,7 +263,7 @@ static void CarLights_Task( void *pvParameters )
 {
 	// Binary array with one index per LED
 	// This variable will store a copy of its global counterpart
-	uint8_t copy_car_array [18] = { 0 };
+	uint8_t car_array [18] = { 0 };
 
 	// Variable in which the delay value is stored
 	TickType_t delay_ticks;
@@ -252,38 +273,37 @@ static void CarLights_Task( void *pvParameters )
 		// Normalize the delay_ticks variable to 1 second
 		delay_ticks = 1000 / portTICK_PERIOD_MS;
 
-		// Copy the global car_array
-		for (int i = 0; i < 18; ++i)
-		{
-			copy_car_array[i] = car_array[i];
-		}
-
 		// Loop over the second-last -> first elements of the array
 		for (int i = 17; i >= 0; --i)
 		{
 			// If LED is located after stop line, move the car forward
 			if (i > 7)
 			{
-				copy_car_array[i + 1] = copy_car_array[i];
-				copy_car_array[i] = 0;
+				car_array[i + 1] = car_array[i];
+				car_array[i] = 0;
 			}
 			// LEDs before stop line need to consider status of traffic light
 			else
 			{
 				// If green light, move the car forward
-				if (cars_moving)
-				{
-					copy_car_array[i + 1] = copy_car_array[i];
-					copy_car_array[i] = 0;
-				}
+				uint8_t cars_moving;
 
-				// If red/amber light, do not move the car forward
-				else
+				if(xQueueReceive(xQueue_lightStatus_handle, cars_moving, 2000))
 				{
-					if (!copy_car_array[i + 1] && i != 7)
+					if (cars_moving)
 					{
-						copy_car_array[i + 1] = copy_car_array[i];
-						copy_car_array[i] = 0;
+					car_array[i + 1] = car_array[i];
+					car_array[i] = 0;
+					}
+
+					// If red/amber light, do not move the car forward
+					else
+					{
+						if (!car_array[i + 1] && i != 7)
+						{
+							car_array[i + 1] = car_array[i];
+							car_array[i] = 0;
+						}
 					}
 				}
 			}
@@ -292,27 +312,25 @@ static void CarLights_Task( void *pvParameters )
 		// Proportional to the potentiometer value, randomly determine whether a new should be added
 		if (rand() % 100 < max(pot_value * 100, 15))
 		{
-			copy_car_array[0] = 1;
+			car_array[0] = 1;
 		}
-		else if (!copy_car_array[0])
+		else if (!car_array[0])
 		{
-			copy_car_array[0] = 0;
+			car_array[0] = 0;
 		}
 
 		// Use the binary array to enable/disable the proper LEDs
-		writeCarLeds(copy_car_array);
+		writeCarLeds(car_array);
 
-		// Write the copy array to the global array
-		for (int i = 0; i < 19; ++i)
+		float pot_value;
+		if (xQueueReceive(xQueue_potentiometer_handle, &pot_value, 2000))
 		{
-			car_array[i] = copy_car_array[i];
+			delay_ticks = delay_ticks * pot_value * CAR_SPEED_DEFAULT;
+			delay_ticks = max(333, delay_ticks);
+
+			// Delay for a value proportional to the potentiometer value
+			vTaskDelay(delay_ticks);
 		}
-
-		delay_ticks = delay_ticks * pot_value * CAR_SPEED_DEFAULT;
-		delay_ticks = max(333, delay_ticks);
-
-		// Delay for a value proportional to the potentiometer value
-		vTaskDelay(delay_ticks);
 	}
 
 }
